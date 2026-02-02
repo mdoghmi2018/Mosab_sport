@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, DateTime, Enum as SQLEnum
+from sqlalchemy import Column, String, Integer, Boolean, DateTime, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 import uuid
@@ -23,6 +23,13 @@ class User(Base):
     role = Column(SQLEnum(UserRole), default=UserRole.ORGANIZER, nullable=False)
     verified_phone = Column(Boolean, default=False, nullable=False)
     verified_email = Column(Boolean, default=False, nullable=False)
+    
+    # User stats (can be calculated or stored)
+    events_count = Column(Integer, default=0, nullable=False)
+    wins_count = Column(Integer, default=0, nullable=False)
+    rating = Column(Integer, default=0, nullable=False)  # ELO-style rating
+    friends_count = Column(Integer, default=0, nullable=False)
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

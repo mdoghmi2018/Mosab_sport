@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, DateTime, ForeignKey, Enum as SQLEnum, UniqueConstraint, Index
+from sqlalchemy import Column, String, Integer, DateTime, ForeignKey, Boolean, Enum as SQLEnum, UniqueConstraint, Index
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -11,6 +11,15 @@ class MatchStatus(str, enum.Enum):
     LIVE = "live"
     FINAL = "final"
     ABANDONED = "abandoned"
+
+class MatchFormat(str, enum.Enum):
+    FIVE_X_FIVE = "5x5"
+    SIX_X_SIX = "6x6"
+    SEVEN_X_SEVEN = "7x7"
+    EIGHT_X_EIGHT = "8x8"
+    NINE_X_NINE = "9x9"
+    TEN_X_TEN = "10x10"
+    ELEVEN_X_ELEVEN = "11x11"
 
 class RefereeAssignmentStatus(str, enum.Enum):
     OFFERED = "offered"
@@ -29,6 +38,16 @@ class Match(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     reservation_id = Column(UUID(as_uuid=True), ForeignKey("reservations.id"), nullable=False, unique=True)
     sport = Column(String(50), nullable=False)
+    
+    # Match format and player count
+    match_format = Column(SQLEnum(MatchFormat), nullable=True)  # 5x5, 8x8, etc.
+    players_per_team = Column(Integer, nullable=True)  # Number of players per team
+    total_players = Column(Integer, nullable=True)  # Total players (players_per_team * 2)
+    
+    # Public match support
+    is_public = Column(Boolean, default=False, nullable=False)
+    spots_available = Column(Integer, nullable=True)  # For public matches
+    
     status = Column(SQLEnum(MatchStatus), default=MatchStatus.SCHEDULED, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     started_at = Column(DateTime(timezone=True), nullable=True)

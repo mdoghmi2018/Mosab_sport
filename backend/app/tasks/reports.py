@@ -60,27 +60,55 @@ def generate_match_report_task(match_id: str, version: int = None):
         ).order_by(MatchEvent.seq).all()
         
         reservation = match.reservation
-        slot = reservation.slot
-        court = slot.court
-        venue = court.venue
+        
+        # Handle venue/court/slot info (own court reservations don't have slots)
+        if reservation.slot:
+            slot = reservation.slot
+            court = slot.court
+            venue = court.venue
+            venue_info = {
+                "name": venue.name,
+                "location": venue.location_json
+            }
+            court_info = {
+                "name": court.name,
+                "sport": court.sport
+            }
+            slot_info = {
+                "start": slot.start_ts.isoformat(),
+                "end": slot.end_ts.isoformat()
+            }
+        else:
+            # Own court - get info from event or reservation
+            from app.models.event import Event
+            event = db.query(Event).filter(Event.reservation_id == reservation.id).first()
+            if event and event.custom_venue_json:
+                venue_info = {
+                    "name": event.custom_venue_json.get("name", "Custom Venue"),
+                    "location": event.custom_venue_json.get("location", {})
+                }
+                court_info = {
+                    "name": event.custom_venue_json.get("court_name", "Custom Court"),
+                    "sport": match.sport
+                }
+                slot_info = {
+                    "start": event.event_date.isoformat(),
+                    "end": (event.event_date.isoformat() if not event.event_time else f"{event.event_date.date()} {event.event_time}")
+                }
+            else:
+                # Fallback if no event data
+                venue_info = {"name": "Custom Venue", "location": {}}
+                court_info = {"name": "Custom Court", "sport": match.sport}
+                slot_info = {"start": "", "end": ""}
         
         # Build report JSON (canonical)
         report_data = {
             "match_id": str(match_uuid),
             "version": version,
             "sport": match.sport,
-            "venue": {
-                "name": venue.name,
-                "location": venue.location_json
-            },
-            "court": {
-                "name": court.name,
-                "sport": court.sport
-            },
-            "slot": {
-                "start": slot.start_ts.isoformat(),
-                "end": slot.end_ts.isoformat()
-            },
+            "venue": venue_info,
+            "court": court_info,
+            "slot": slot_info,
             "events": [
                 {
                     "seq": event.seq,

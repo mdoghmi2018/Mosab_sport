@@ -73,9 +73,26 @@ async def create_match_from_reservation(
     if existing_match:
         return existing_match
     
+    # Get sport from slot or event (handle own court)
+    sport = None
+    if reservation.slot:
+        sport = reservation.slot.court.sport
+    else:
+        # Own court - get sport from event
+        from app.models.event import Event
+        event = db.query(Event).filter(Event.reservation_id == reservation_id).first()
+        if event:
+            sport = event.sport
+    
+    if not sport:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot determine sport for match (no slot or event found)"
+        )
+    
     match = Match(
         reservation_id=reservation_id,
-        sport=reservation.slot.court.sport,
+        sport=sport,
         status=MatchStatus.SCHEDULED
     )
     

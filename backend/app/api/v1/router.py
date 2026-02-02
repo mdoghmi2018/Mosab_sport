@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1 import auth, booking, payments, matchops, reports, awards, pt, formation, ads, admin
+from app.api.v1 import auth, booking, payments, matchops, reports, awards, pt, formation, ads, admin, events, addons
 
 api_router = APIRouter()
 
@@ -9,6 +9,8 @@ api_router.include_router(booking.router, prefix="/venues", tags=["Booking"])
 api_router.include_router(payments.router, prefix="/payments", tags=["Payments"])
 api_router.include_router(matchops.router, prefix="/matches", tags=["Match Operations"])
 api_router.include_router(reports.router, prefix="/reports", tags=["Reports"])
+api_router.include_router(events.router, prefix="/events", tags=["Events"])
+api_router.include_router(addons.router, prefix="/addons", tags=["Add-ons"])
 
 # Phase 2 - v1.2 enhancements
 api_router.include_router(awards.router, prefix="/awards", tags=["Awards"])

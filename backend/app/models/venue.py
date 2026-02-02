@@ -49,7 +49,7 @@ class Slot(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     
     court = relationship("Court", back_populates="slots")
-    reservation = relationship("Reservation", back_populates="slot", uselist=False)
+    reservation = relationship("Reservation", back_populates="slot", uselist=False, foreign_keys="Reservation.slot_id")
     
     __table_args__ = (
         UniqueConstraint("court_id", "start_ts", "end_ts", name="uq_slot_court_time"),

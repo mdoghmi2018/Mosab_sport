@@ -45,16 +45,23 @@ class SlotResponse(BaseModel):
         from_attributes = True
 
 class ReservationCreateRequest(BaseModel):
-    slot_id: UUID
+    slot_id: Optional[UUID] = None  # Nullable for own court option
     actor_type: ActorType
     actor_id: Optional[str] = None
+    use_own_court: bool = False
+    custom_venue_json: Optional[Dict[str, Any]] = None
 
 class ReservationResponse(BaseModel):
     id: str
-    slot_id: str
+    slot_id: Optional[str] = None
     booked_by_user_id: str
     actor_type: str
     status: str
+    is_recurring: bool
+    recurrence_pattern: Optional[str] = None
+    recurrence_end_date: Optional[datetime] = None
+    use_own_court: bool
+    custom_venue_json: Optional[Dict[str, Any]] = None
     expires_at: Optional[datetime] = None
     created_at: datetime
     
@@ -124,60 +131,80 @@ async def create_reservation(
     db: Session = Depends(get_db)
 ):
     """Create a reservation with hold TTL"""
-    # Get slot and verify it's available
-    slot = db.query(Slot).filter(Slot.id == request.slot_id).first()
-    if not slot:
+    # Validate court selection
+    if not request.use_own_court and not request.slot_id:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Slot not found"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either use_own_court must be True or slot_id must be provided"
         )
     
-    # Check if there's already a paid reservation for this slot
-    existing_paid = db.query(Reservation).filter(
-        Reservation.slot_id == request.slot_id,
-        Reservation.status == ReservationStatus.PAID
-    ).first()
-    
-    if existing_paid:
+    if request.use_own_court and not request.custom_venue_json:
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Slot is already booked"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="custom_venue_json is required when use_own_court is True"
         )
     
-    # Use SELECT FOR UPDATE to prevent race conditions
-    from sqlalchemy import select
-    from sqlalchemy.orm import with_for_update
+    # Get slot and verify it's available (if not using own court)
+    slot = None
+    slot_price_cents = None
+    if not request.use_own_court and request.slot_id:
+        slot = db.query(Slot).filter(Slot.id == request.slot_id).first()
+        if not slot:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Slot not found"
+            )
+        slot_price_cents = slot.price_cents
     
-    # Lock the slot row for update to prevent concurrent modifications
-    slot = db.query(Slot).with_for_update().filter(Slot.id == request.slot_id).first()
+    # Handle slot-based reservation (with locking for race condition prevention)
+    if not request.use_own_court and request.slot_id:
+        # Check if there's already a paid reservation for this slot
+        existing_paid = db.query(Reservation).filter(
+            Reservation.slot_id == request.slot_id,
+            Reservation.status == ReservationStatus.PAID
+        ).first()
+        
+        if existing_paid:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Slot is already booked"
+            )
+        
+        # Use SELECT FOR UPDATE to prevent race conditions
+        from sqlalchemy import select
+        from sqlalchemy.orm import with_for_update
+        
+        # Lock the slot row for update to prevent concurrent modifications
+        slot = db.query(Slot).with_for_update().filter(Slot.id == request.slot_id).first()
+        
+        if not slot:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Slot not found"
+            )
+        
+        # Re-check paid reservation after lock
+        existing_paid = db.query(Reservation).filter(
+            Reservation.slot_id == request.slot_id,
+            Reservation.status == ReservationStatus.PAID
+        ).first()
+        
+        if existing_paid:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Slot is already booked"
+            )
+        
+        # Transaction: check and update slot status
+        if slot.status != SlotStatus.OPEN:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Slot is not available"
+            )
+        
+        # Set slot to HELD
+        slot.status = SlotStatus.HELD
     
-    if not slot:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Slot not found"
-        )
-    
-    # Re-check paid reservation after lock
-    existing_paid = db.query(Reservation).filter(
-        Reservation.slot_id == request.slot_id,
-        Reservation.status == ReservationStatus.PAID
-    ).first()
-    
-    if existing_paid:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Slot is already booked"
-        )
-    
-    # Transaction: check and update slot status
-    if slot.status != SlotStatus.OPEN:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Slot is not available"
-        )
-    
-    # Set slot to HELD and create reservation
-    slot.status = SlotStatus.HELD
     expires_at = datetime.utcnow() + timedelta(minutes=settings.HOLD_TTL_MINUTES)
     
     reservation = Reservation(
@@ -186,14 +213,26 @@ async def create_reservation(
         actor_type=request.actor_type,
         actor_id=request.actor_id,
         status=ReservationStatus.PENDING,
-        expires_at=expires_at
+        expires_at=expires_at,
+        use_own_court=request.use_own_court,
+        custom_venue_json=request.custom_venue_json
     )
     
-    db.add(reservation)
-    db.commit()
-    db.refresh(reservation)
-    
-    return reservation
+    try:
+        db.add(reservation)
+        db.commit()
+        db.refresh(reservation)
+        return reservation
+    except Exception as e:
+        db.rollback()
+        # Restore slot status if it was changed
+        if not request.use_own_court and request.slot_id and slot:
+            slot.status = SlotStatus.OPEN
+            db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating reservation: {str(e)}"
+        )
 
 @router.get("/reservations/my", response_model=List[ReservationResponse])
 async def my_reservations(

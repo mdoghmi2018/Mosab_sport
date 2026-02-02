@@ -12,6 +12,7 @@ from app.models.booking import Reservation, ReservationStatus
 from app.models.payment import Payment, PaymentStatus, PaymentEvent
 from app.models.venue import Slot, SlotStatus
 from app.models.match import Match, MatchStatus
+from app.models.event import Event
 
 router = APIRouter()
 
@@ -71,11 +72,27 @@ async def initiate_payment(
                 status=existing_payment.status.value
             )
     
+    # Determine payment amount (handle own court case)
+    if reservation.slot:
+        amount_cents = reservation.slot.price_cents
+        currency = reservation.slot.currency
+    else:
+        # Own court - use a default amount or get from event
+        # For now, use 0 or get from event if linked
+        from app.models.event import Event
+        event = db.query(Event).filter(Event.reservation_id == reservation.id).first()
+        if event and event.total_cost_cents:
+            amount_cents = event.total_cost_cents
+            currency = event.currency
+        else:
+            amount_cents = 0  # Own court, no charge
+            currency = "USD"
+    
     # Create payment
     payment = Payment(
         provider="stripe",  # TODO: make configurable
-        amount_cents=reservation.slot.price_cents,
-        currency=reservation.slot.currency,
+        amount_cents=amount_cents,
+        currency=currency,
         status=PaymentStatus.INITIATED,
         reservation_id=reservation.id
     )
@@ -185,6 +202,13 @@ async def payment_webhook(
                 Payment.provider_ref == payment_ref
             ).first()
             
+            if not payment:
+                # Payment not found - log warning but don't fail webhook
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Payment webhook received for unknown payment_ref: {payment_ref}")
+                # Continue processing - webhook event is still stored for audit
+            
             if payment:
                 # Determine payment status from webhook
                 webhook_status = payload.get("type") or payload.get("status", "").lower()
@@ -198,22 +222,37 @@ async def payment_webhook(
                     reservation.status = ReservationStatus.PAID
                     reservation.payment_id = payment.id
                     
-                    # Update slot
-                    reservation.slot.status = SlotStatus.BOOKED
+                    # Update slot (if exists - own court reservations don't have slots)
+                    if reservation.slot:
+                        reservation.slot.status = SlotStatus.BOOKED
                     
                     # Create match automatically
-                    match = Match(
-                        reservation_id=reservation.id,
-                        sport=reservation.slot.court.sport,
-                        status=MatchStatus.SCHEDULED
-                    )
-                    db.add(match)
+                    # Get sport from slot or event
+                    sport = None
+                    if reservation.slot:
+                        sport = reservation.slot.court.sport
+                    else:
+                        # Own court - get sport from event
+                        from app.models.event import Event
+                        event = db.query(Event).filter(Event.reservation_id == reservation.id).first()
+                        if event:
+                            sport = event.sport
+                    
+                    if sport:
+                        match = Match(
+                            reservation_id=reservation.id,
+                            sport=sport,
+                            status=MatchStatus.SCHEDULED
+                        )
+                        db.add(match)
                 
                 elif "failed" in webhook_status:
                     payment.status = PaymentStatus.FAILED
                     reservation = payment.reservation
                     reservation.status = ReservationStatus.CANCELLED
-                    reservation.slot.status = SlotStatus.OPEN
+                    # Update slot (if exists - own court reservations don't have slots)
+                    if reservation.slot:
+                        reservation.slot.status = SlotStatus.OPEN
         
         db.commit()
         return {"status": "processed", "event_id": str(payment_event.id)}
